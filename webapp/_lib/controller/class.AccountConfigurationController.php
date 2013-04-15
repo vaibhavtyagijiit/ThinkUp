@@ -138,19 +138,36 @@ class AccountConfigurationController extends ThinkUpAuthController {
 
         //process service user deletion
         if (isset($_POST['action']) && $_POST['action'] == 'delete' && isset($_POST['instance_id']) &&
-        is_numeric($_POST['instance_id'])) {
+        is_numeric($_POST['instance_id']) && !isset($_POST['hashtag_id']) && !isset($_POST['new_hashtag_name'])) {
             $owner_instance_dao = DAOFactory::getDAO('OwnerInstanceDAO');
             $instance_dao = DAOFactory::getDAO('InstanceDAO');
+            $instancehashtag_dao = DAOFactory::getDAO('InstanceHashtagDAO');
+            $hashtagpost_dao = DAOFactory::getDAO('HashtagPostDAO');
+            $hashtag_dao = DAOFactory::getDAO('HashtagDAO');
             $instance = $instance_dao->get($_POST['instance_id']);
+            $message='';
             if ( isset($instance) ) {
                 // verify CSRF token
                 $this->validateCSRFToken();
                 if ($this->isAdmin()) {
+                    //Retrieve this instance's saved searches
+                    $instances_hashtags = $instancehashtag_dao->getByInstance($instance->id);
+                    foreach ($instances_hashtags as $instance_hashtag) {
+                        $hashtag_id = $instance_hashtag->hashtag_id;
+                        $deleted_searches = $instancehashtag_dao->deleteInstancesHashtagsByHashtagID($hashtag_id);
+                        //Continue deletions if no other owner has saved this search
+                        if ($instancehashtag_dao->isHashtagSaved($hashtag_id)) {
+                            $deleted_searchposts= $hashtagpost_dao->deleteHashtagsPostsByHashtagID($hashtag_id);
+                            $deleted_hashtag = $hashtag_dao->deleteHashtagByID($hashtag_id);
+                        }
+                        $message .= "Deleted saved searches.";
+                    }
                     //delete all owner_instances
                     $owner_instance_dao->deleteByInstance($instance->id);
                     //delete instance
                     $instance_dao->delete($instance->network_username, $instance->network);
-                    $this->addSuccessMessage('Account deleted.', 'account');
+                    $this->addSuccessMessage('Account deleted.' . $message, 'account');
+
                 } else  {
                     if ( $owner_instance_dao->doesOwnerHaveAccessToInstance($owner, $instance) ) {
                         //delete owner instance
@@ -159,9 +176,23 @@ class AccountConfigurationController extends ThinkUpAuthController {
                             //delete instance if no other owners have it
                             $remaining_owner_instances = $owner_instance_dao->getByInstance($instance->id);
                             if (sizeof($remaining_owner_instances) == 0 ) {
+                                //Retrieve this instance's saved searches
+                                $instances_hashtags = $instancehashtag_dao->getByInstance($instance->id);
+                                foreach ($instances_hashtags as $instance_hashtag) {
+                                    $hashtag_id = $instance_hashtag->hashtag_id;
+                                    $deleted_searches =
+                                    $instancehashtag_dao->deleteInstancesHashtagsByHashtagID($hashtag_id);
+                                    //Continue deletions if no other owner has saved this search
+                                    if ($instancehashtag_dao->isHashtagSaved($hashtag_id)) {
+                                        $deleted_searchposts =
+                                        $hashtagpost_dao->deleteHashtagsPostsByHashtagID($hashtag_id);
+                                        $deleted_hashtag = $hashtag_dao->deleteHashtagByID($hashtag_id);
+                                    }
+                                    $message .= "Deleted saved searches.";
+                                }
                                 $instance_dao->delete($instance->network_username, $instance->network);
                             }
-                            $this->addSuccessMessage('Account deleted.', 'account');
+                            $this->addSuccessMessage('Account deleted.'. $message, 'account');
                         }
                     } else {
                         $this->addErrorMessage('Insufficient privileges.', 'account');
@@ -171,10 +202,64 @@ class AccountConfigurationController extends ThinkUpAuthController {
                 $this->addErrorMessage('Instance doesn\'t exist.', 'account');
             }
         }
+
+        //process service user hashtag deletion
+        if (isset($_POST['action']) && $_POST['action'] == 'Delete' && isset($_POST['hashtag_id'])
+        && is_numeric($_POST['hashtag_id']) && isset($_POST['instance_id'])
+        && is_numeric($_POST['instance_id'])) {
+            $instancehashtag_dao = DAOFactory::getDAO('InstanceHashtagDAO');
+            $hashtag_dao = DAOFactory::getDAO('HashtagDAO');
+            $hashtagpost_dao = DAOFactory::getDAO('HashtagPostDAO');
+
+            $hashtag_id = $_POST['hashtag_id'];
+            $instance_id = $_POST['instance_id'];
+            $instance_dao = DAOFactory::getDAO('InstanceDAO');
+            $instance = $instance_dao->get($instance_id);
+
+            if ( isset($instance) ) {
+                $hashtags_posts_deleted = $hashtagpost_dao->deleteHashtagsPostsByHashtagID($hashtag_id);
+                $instances_hashtags_deleted = $instancehashtag_dao->deleteInstanceHashtagsByHashtagID($hashtag_id);
+                $hashtags_deleted = $hashtag_dao->deleteHashtagByID($hashtag_id);
+                $message = "Deleted saved search.";
+                $this->addSuccessMessage($message,'account');
+            } else {
+                $this->addErrorMessage('Instance doesn\'t exist.','account');
+            }
+        }
+
+        //process service user hashtag addition
+        if (isset($_POST['action']) && $_POST['action'] == 'Save search'
+        && isset($_POST['new_hashtag_name']) && $_POST['new_hashtag_name']<>''
+        && isset($_POST['instance_id']) && is_numeric($_POST['instance_id'])) {
+
+            $instancehashtag_dao = DAOFactory::getDAO('InstanceHashtagDAO');
+            $hashtag_dao = DAOFactory::getDAO('HashtagDAO');
+
+            $instance_id = $_POST['instance_id'];
+            $new_hashtag_name=$_POST['new_hashtag_name'];
+
+            $instance_dao = DAOFactory::getDAO('InstanceDAO');
+            $instance = $instance_dao->get($instance_id);
+            if ( isset($instance) ) {
+                $hashtag = $hashtag_dao->getHashtag($new_hashtag_name, $instance->network);
+                if (!isset($hashtag)) {
+                    $hashtag_id = $hashtag_dao->insertHashtag($new_hashtag_name, $instance->network);
+                    $row_inserted = $instancehashtag_dao->insert($instance_id, $hashtag_id);
+                    $message = "Saved search for " . $new_hashtag_name . ".";
+                    $this->addSuccessMessage($message,'account');
+                } else {
+                    $row_inserted = $instancehashtag_dao->insert($instance_id, $hashtag->id);
+                    $message = "Saved search for " . $new_hashtag_name . ".";
+                    $this->addSuccessMessage($message,'account');
+                }
+            } else {
+                $this->addErrorMessage('Instance doesn\'t exist.','account');
+            }
+        }
         $this->view_mgr->clear_all_cache();
 
         /* Begin plugin-specific configuration handling */
-        if (isset($_GET['p'])) {
+        if (isset($_GET['p']) && !isset($_GET['u'])) {
             // add config js to header
             if ($this->isAdmin()) {
                 $this->addHeaderJavaScript('assets/js/plugin_options.js');
@@ -186,7 +271,20 @@ class AccountConfigurationController extends ThinkUpAuthController {
             $this->addToView('body', $p->renderConfiguration($owner));
             $profiler = Profiler::getInstance();
             $profiler->clearLog();
-        } else {
+        } elseif (isset($_GET['p']) && isset($_GET['u']) && isset($_GET['n'])) {
+            if ($this->isAdmin()) {
+                $this->addHeaderJavaScript('assets/js/plugin_options.js');
+            }
+            $active_plugin = $_GET['p'];
+            $instance_username = $_GET['u'];
+            $instance_network = $_GET['n'];
+            $webapp_plugin_registrar = PluginRegistrarWebapp::getInstance();
+            $pobj = $webapp_plugin_registrar->getPluginObject($active_plugin);
+            $p = new $pobj;
+            $this->addToView('body', $p->renderInstanceConfiguration($owner, $instance_username, $instance_network));
+            $profiler = Profiler::getInstance();
+            $profiler->clearLog();
+        }  else {
             $plugin_dao = DAOFactory::getDAO('PluginDAO');
             $config = Config::getInstance();
             $installed_plugins = $plugin_dao->getInstalledPlugins();
